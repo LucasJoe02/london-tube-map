@@ -1,0 +1,56 @@
+name: Refresh listings and deploy
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 5 * * *" # daily, 05:30 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write # commit refreshed listings
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Plain pushes just redeploy; the schedule (or a manual run) refreshes listings first.
+      # If one site blocks the runner, fetch_listings.py keeps that site's previous listings.
+      - name: Refresh listings
+        if: github.event_name != 'push'
+        run: python3 fetch_listings.py
+
+      - name: Commit refreshed listings
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/listings.js
+          if git diff --cached --quiet; then
+            echo "No listing changes"
+          else
+            git commit -m "Refresh listings $(date -u +%F)"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+      - id: deployment
+        uses: actions/deploy-pages@v4

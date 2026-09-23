@@ -1,0 +1,6 @@
+# Raw source downloads — regenerate with ./fetch_data.sh
+data/raw-*.json
+data/boroughs-raw.geojson
+
+__pycache__/
+.DS_Store

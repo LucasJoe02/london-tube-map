@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>City Commute Map</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --panel-bg: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6b6b70;
+    --border: #e2e2e6;
+    --borough: #1f77b4;
+    --walk: #0a9d58;
+    --tier-in: #1a9641;
+    --tier-rent: #f39c12;
+    --tier-perhead: #8e44ad;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--text); }
+  #map { position: absolute; inset: 0; }
+
+  .panel {
+    position: absolute; top: 12px; right: 12px; z-index: 1000;
+    width: 300px; max-height: calc(100% - 24px); overflow-y: auto;
+    background: var(--panel-bg); border-radius: 10px; padding: 14px 16px;
+    box-shadow: 0 4px 18px rgba(0,0,0,.15);
+  }
+  .panel h1 { font-size: 16px; margin: 0 0 4px; }
+  .panel p.sub { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 14px 0 6px; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; cursor: pointer; }
+  .row input[type=checkbox] { margin: 0; }
+  .swatch { width: 22px; height: 6px; border-radius: 3px; flex: none; }
+  .slider label { display: flex; justify-content: space-between; font-size: 13px; }
+  .slider input { width: 100%; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 4px 0; }
+  .legend-box { width: 18px; height: 14px; border-radius: 3px; flex: none; }
+  #borough-list { font-size: 12px; color: var(--muted); margin: 6px 0 0; padding-left: 16px; }
+  #borough-list li { margin: 1px 0; }
+  #borough-list b { color: var(--text); font-weight: 600; }
+  .toggle-panel { display: none; }
+
+  .target-label {
+    background: #111; color: #fff; border: none; border-radius: 4px;
+    font-weight: 600; font-size: 12px; padding: 2px 6px; box-shadow: none;
+  }
+  .target-label::before { display: none; }
+  .target-label.secondary { background: #555; font-weight: 500; font-size: 11px; }
+  .leaflet-tooltip-top.target-label, .leaflet-tooltip-bottom.target-label { margin: 0; }
+  .borough-tip .leaflet-popup-content { font-size: 12px; }
+  .popup-times { margin: 4px 0 0; padding: 0; list-style: none; }
+  .popup-times li { display: flex; align-items: center; gap: 6px; }
+
+  /* Walk circles share one pane with group opacity, so overlaps don't darken. */
+  .leaflet-walk-pane { opacity: .22; }
+
+  .flat-pin { width: 14px; height: 14px; border-radius: 4px; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.4); }
+  .flat-pin.in { background: var(--tier-in); }
+  .flat-pin.rent { background: var(--tier-rent); }
+  .flat-pin.perhead { background: var(--tier-perhead); }
+  .flat-pin.bills::after { content: ''; position: absolute; top: -5px; right: -5px; width: 7px; height: 7px; border-radius: 50%; background: #1f77b4; border: 1.5px solid #fff; }
+  .flat-pin { position: relative; }
+  .flat-popup { width: 260px; }
+  .flat-popup img { width: 100%; height: 130px; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 6px; background: #eee; }
+  .flat-popup .price { font-size: 17px; font-weight: 700; }
+  .flat-popup .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 10px; margin: 2px 4px 2px 0; }
+  .flat-popup table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+  .flat-popup td { padding: 2px 0; }
+  .flat-popup td:last-child { text-align: right; font-weight: 600; }
+  .flat-popup .muted { color: #666; font-size: 12px; }
+  .flat-popup a.cta { display: block; text-align: center; background: #111; color: #fff; text-decoration: none; padding: 6px; border-radius: 6px; margin-top: 6px; font-weight: 600; }
+  .panel details { font-size: 12px; color: var(--muted); margin: 6px 0; }
+  .panel details summary { cursor: pointer; color: var(--text); font-weight: 600; }
+  .panel details p { margin: 4px 0; }
+  .panel a { color: #1f77b4; }
+
+  @media (max-width: 600px) {
+    .panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 45%; border-radius: 12px 12px 0 0; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<aside class="panel">
+  <h1>City commute map</h1>
+  <p class="sub">Tube, Elizabeth line, DLR &amp; Overground (Weaver) serving Old Street, Moorgate, Liverpool Street &amp; Bank (District via Monument). Click a borough, line or station for details.</p>
+
+  <div class="slider">
+    <label for="max-min"><span>Max journey time</span><b id="max-min-val">30 min</b></label>
+    <input id="max-min" type="range" min="5" max="60" step="5" value="30">
+  </div>
+  <div class="slider">
+    <label for="walk-min"><span>Walking radius</span><b id="walk-min-val">10 min · 800 m</b></label>
+    <input id="walk-min" type="range" min="5" max="20" step="1" value="10">
+  </div>
+
+  <h2>Lines</h2>
+  <div id="line-toggles"></div>
+
+  <h2>Layers</h2>
+  <label class="row"><input type="checkbox" id="show-boroughs" checked> Highlight reachable boroughs</label>
+  <label class="row"><input type="checkbox" id="show-walk" checked> Walking-distance shading</label>
+  <label class="row"><input type="checkbox" id="walk-reachable-only"> Shade reachable stations only</label>
+  <label class="row"><input type="checkbox" id="show-stations" checked> Station markers</label>
+
+  <h2>Legend</h2>
+  <div class="legend-item"><span class="legend-box" style="background:var(--borough);opacity:.35;border:2px solid var(--borough)"></span><span>Borough with a station ≤ <span class="max-min-inline">30</span> min away</span></div>
+  <div class="legend-item"><span class="legend-box" style="background:var(--walk);opacity:.45;border-radius:50%"></span><span id="walk-legend">10 min walk from a station</span></div>
+
+  <h2>Furnished 2-bed flats (<span id="flat-count">0</span>)</h2>
+  <label class="row"><input type="checkbox" id="flats-in" checked><span class="flat-pin in"></span><span>Single pays ≤ ~£1,000 incl. bills (<span id="n-in">0</span>)</span></label>
+  <label class="row"><input type="checkbox" id="flats-rent" checked><span class="flat-pin rent"></span><span>Rent fits, bills push it over (<span id="n-rent">0</span>)</span></label>
+  <label class="row"><input type="checkbox" id="flats-perhead"><span class="flat-pin perhead"></span><span>Only fits if split per head (<span id="n-perhead">0</span>)</span></label>
+  <label class="row"><input type="checkbox" id="src-openrent" checked><span>OpenRent (<span id="n-openrent">0</span>)</span></label>
+  <label class="row"><input type="checkbox" id="src-rightmove" checked><span>Rightmove (<span id="n-rightmove">0</span>)</span></label>
+  <label class="row"><input type="checkbox" id="flats-bills-only"><span class="flat-pin bills" style="background:#ccc"></span><span>Bills included only</span></label>
+  <label class="row"><input type="checkbox" id="flats-reachable" checked><span>Only near stations within max journey time</span></label>
+  <details>
+    <summary>How the budget is worked out</summary>
+    <p>There's no fixed rule for a couple + single sharing a 2-bed. The common options are: split by room (50/50), by space (~60/40 couple/single), or by head (⅔ / ⅓). This map uses the middle ground: <b>rent 60/40</b>, with <b>bills split per head</b> (⅓ each, since they scale with people).</p>
+    <p>Where bills aren't included, they're estimated at <b>£<span id="est-bills">370</span>/month</b> for the flat (council tax ~£150, energy ~£130, water ~£45, broadband ~£30, TV licence ~£15). "Bills included" on a listing may not cover council tax — check.</p>
+    <p>"Only fits if split per head" means the single's ⅓ share is ≤ ~£1,000 but their 40% share isn't.</p>
+  </details>
+  <p class="sub" style="margin:6px 0 0">Sources: <a href="https://www.openrent.co.uk" target="_blank" rel="noopener">OpenRent</a> and <a href="https://www.rightmove.co.uk" target="_blank" rel="noopener">Rightmove</a> (updated: <span id="flats-fetched"></span>). Refreshed daily; listings go fast. Rightmove doesn't flag bills, so it's read from the listing text; most don't mention bills.</p>
+
+  <h2>Reachable boroughs (<span id="borough-count">0</span>)</h2>
+  <ul id="borough-list"></ul>
+</aside>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="data/network.js"></script>
+<script src="data/boroughs.js"></script>
+<script src="data/listings.js"></script>
+<script>
+const WALK_M_PER_MIN = 80; // ~4.8 km/h
+const { lines, stations, targets } = window.NETWORK;
+const targetIds = new Set(targets.map(t => t.id));
+const LABEL_POS = {
+  'Old Street': { direction: 'top', offset: [0, -10] },
+  'Moorgate': { direction: 'left', offset: [-10, 0] },
+  'Liverpool Street': { direction: 'right', offset: [10, 0] },
+  'Bank': { direction: 'bottom', offset: [0, 10] },
+  'Monument (Bank)': { direction: 'right', offset: [8, 4] },
+};
+
+const state = {
+  maxMin: 30,
+  walkMin: 10,
+  activeLines: new Set(Object.keys(lines)),
+};
+
+// ---------- Map + base layers ----------
+const map = L.map('map', { zoomControl: true }).setView([51.515, -0.09], 11);
+
+const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · Powered by TfL Open Data',
+}).addTo(map);
+const esri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 19,
+  attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, OpenStreetMap contributors · Powered by TfL Open Data',
+});
+L.control.layers({ 'Streets (OpenStreetMap)': osm, 'Streets (Esri)': esri }, null, { position: 'topleft' }).addTo(map);
+L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
+
+map.createPane('boroughs').style.zIndex = 350;
+map.createPane('walk').style.zIndex = 390;
+map.getPane('walk').classList.add('leaflet-walk-pane');
+map.createPane('lines').style.zIndex = 420;
+map.createPane('stations').style.zIndex = 450;
+map.createPane('targets').style.zIndex = 460;
+map.createPane('flats').style.zIndex = 620; // above markers pane so pins stay clickable
+
+const walkRenderer = L.svg({ pane: 'walk' });
+
+// ---------- Helpers ----------
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function pointInPolygon(lon, lat, polygon) {
+  if (!pointInRing(lon, lat, polygon[0])) return false;
+  for (let k = 1; k < polygon.length; k++) if (pointInRing(lon, lat, polygon[k])) return false;
+  return true;
+}
+function pointInFeature(lon, lat, geom) {
+  if (geom.type === 'Polygon') return pointInPolygon(lon, lat, geom.coordinates);
+  if (geom.type === 'MultiPolygon') return geom.coordinates.some(p => pointInPolygon(lon, lat, p));
+  return false;
+}
+
+// Best (lowest) time for a station across active lines.
+function bestTime(st) {
+  let best = null;
+  for (const [lineId, t] of Object.entries(st.times)) {
+    if (!state.activeLines.has(lineId)) continue;
+    if (!best || t.min < best.min) best = { ...t, line: lineId };
+  }
+  return best;
+}
+const onActiveLine = st => Object.keys(st.times).some(l => state.activeLines.has(l));
+const lineLabel = line => /line|DLR/.test(line.name) ? line.name : line.name + ' line';
+const fmtMin = m => (m < 1 ? '<1' : Math.round(m)) + ' min';
+
+// Station -> borough (static, computed once).
+for (const st of stations) {
+  const f = window.BOROUGHS.features.find(f => pointInFeature(st.lon, st.lat, f.geometry));
+  st.borough = f ? f.properties.name : null;
+}
+
+// ---------- Layers ----------
+const boroughLayer = L.geoJSON(window.BOROUGHS, {
+  pane: 'boroughs',
+  style: () => ({ color: '#888', weight: 1, fillOpacity: 0, dashArray: '3 3' }),
+  onEachFeature: (f, layer) => layer.bindPopup('', { className: 'borough-tip' }),
+}).addTo(map);
+
+const lineLayers = {};
+for (const line of Object.values(lines)) {
+  const casing = L.polyline(line.geometry, { pane: 'lines', color: '#fff', weight: 7, opacity: .9, interactive: false });
+  const stroke = L.polyline(line.geometry, { pane: 'lines', color: line.colour, weight: 4, opacity: 1 })
+    .bindPopup(`<b>${lineLabel(line)}</b>`);
+  lineLayers[line.id] = L.layerGroup([casing, stroke]).addTo(map);
+}
+
+const walkLayer = L.layerGroup().addTo(map);
+const stationLayer = L.layerGroup().addTo(map);
+const targetLayer = L.layerGroup().addTo(map);
+
+function stationPopup(st) {
+  const rows = Object.entries(st.times)
+    .sort((a, b) => a[1].min - b[1].min)
+    .map(([l, t]) => `<li><span class="swatch" style="background:${lines[l].colour}"></span>${lines[l].name}: <b>${fmtMin(t.min)}</b> to ${t.to}</li>`)
+    .join('');
+  return `<b>${st.name}</b>${st.borough ? `<br><span style="color:#666">${st.borough}${st.zone ? ' · Zone ' + st.zone : ''}</span>` : ''}
+    <ul class="popup-times">${rows}</ul>`;
+}
+
+for (const t of targets) {
+  const st = stations.find(s => s.id === t.id);
+  L.circleMarker([t.lat, t.lon], { pane: 'targets', radius: t.secondary ? 6 : 9, color: '#111', weight: t.secondary ? 2 : 3, fillColor: '#fff', fillOpacity: 1 })
+    .bindTooltip(t.name, { permanent: true, ...LABEL_POS[t.name], className: 'target-label' + (t.secondary ? ' secondary' : '') })
+    .bindPopup(`<b>${t.name}</b><br>Lines: ${Object.keys(st.times).map(l => lines[l].name).join(', ')}`)
+    .addTo(targetLayer);
+}
+
+// ---------- Render (re-run on any control change) ----------
+// ---------- Flats ----------
+const flatLayer = L.layerGroup().addTo(map);
+const LISTINGS = window.LISTINGS || { listings: [], model: {} };
+const TIER_LABEL = {
+  in: ['Within budget', 'var(--tier-in)'],
+  rent: ['Rent fits, bills push over', 'var(--tier-rent)'],
+  perhead: ['Only if split per head', 'var(--tier-perhead)'],
+};
+const gbp = n => '£' + Math.round(n).toLocaleString('en-GB');
+const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function flatPopup(f) {
+  const [tierText, tierColour] = TIER_LABEL[f.tier];
+  const estBills = gbp(LISTINGS.model.estBills);
+  const billsNote = f.billsIncluded ? 'Bills included — check which'
+    : f.billsStated ? `Bills not included (est. ${estBills}/mo)`
+    : `Bills not mentioned — assume not (est. ${estBills}/mo)`;
+  const avail = f.availableInDays == null ? '' : f.availableInDays <= 0 ? ' · Available now' : ` · Available in ${f.availableInDays} days`;
+  const walkMin = Math.max(1, Math.round(f.stationDistM / WALK_M_PER_MIN));
+  return `<div class="flat-popup">
+    ${f.image ? `<img src="${esc(f.image)}" alt="" loading="lazy">` : ''}
+    <div class="price">${gbp(f.price)} pcm</div>
+    <div><b>${esc(f.title)}</b></div>
+    <span class="tag" style="background:${tierColour};color:#fff">${tierText}</span><span class="tag" style="background:${f.billsIncluded ? '#1f77b4' : '#ddd'};color:${f.billsIncluded ? '#fff' : '#333'}">${billsNote}</span>
+    <table>
+      <tr><td>Single (40% rent${f.billsIncluded ? '' : ' + ⅓ bills'})</td><td>${gbp(f.singleAllIn)}</td></tr>
+      <tr><td>Couple (60% rent${f.billsIncluded ? '' : ' + ⅔ bills'})</td><td>${gbp(f.coupleAllIn)}</td></tr>
+      <tr><td>Per head if split ⅓ each</td><td>${gbp(f.perHeadAllIn)}</td></tr>
+    </table>
+    <div class="muted">${esc(f.furnishing)}${f.bathrooms ? ` · ${f.bathrooms} bath` : ''}${avail}${f.minTenancyMonths ? ` · min ${f.minTenancyMonths} mo` : ''}${f.agent ? ` · ${esc(f.agent)}` : ''}${f.updated ? ` · ${esc(f.updated)}` : ''}</div>
+    <div class="muted">${walkMin} min walk to ${esc(f.station)} · then ~${Math.round(f.stationMin)} min to ${esc(f.stationTo)}</div>
+    <a class="cta" href="${esc(f.url)}" target="_blank" rel="noopener">View on ${esc(f.source)} ↗</a>
+  </div>`;
+}
+
+function renderFlats() {
+  flatLayer.clearLayers();
+  const show = { in: el('flats-in').checked, rent: el('flats-rent').checked, perhead: el('flats-perhead').checked };
+  const billsOnly = el('flats-bills-only').checked;
+  const reachableOnly = el('flats-reachable').checked;
+  const counts = { in: 0, rent: 0, perhead: 0 };
+  const srcCounts = { OpenRent: 0, Rightmove: 0 };
+  const srcOn = { OpenRent: el('src-openrent').checked, Rightmove: el('src-rightmove').checked };
+  let shown = 0;
+  for (const f of LISTINGS.listings) {
+    if (billsOnly && !f.billsIncluded) continue;
+    if (reachableOnly && f.stationMin > state.maxMin) continue;
+    srcCounts[f.source]++;
+    if (!srcOn[f.source]) continue;
+    counts[f.tier]++;
+    if (!show[f.tier]) continue;
+    shown++;
+    L.marker([f.lat, f.lon], {
+      pane: 'flats',
+      icon: L.divIcon({ className: '', html: `<div class="flat-pin ${f.tier}${f.billsIncluded ? ' bills' : ''}"></div>`, iconSize: [14, 14], iconAnchor: [7, 7], popupAnchor: [0, -8] }),
+      riseOnHover: true,
+    }).bindPopup(flatPopup(f), { maxWidth: 280 }).addTo(flatLayer);
+  }
+  for (const t of Object.keys(counts)) el('n-' + t).textContent = counts[t];
+  el('n-openrent').textContent = srcCounts.OpenRent;
+  el('n-rightmove').textContent = srcCounts.Rightmove;
+  el('flat-count').textContent = shown;
+}
+const el = id => document.getElementById(id);
+el('flats-fetched').textContent = LISTINGS.sources
+  ? Object.entries(LISTINGS.sources).map(([k, v]) => `${k} ${v || 'never'}`).join(', ')
+  : (LISTINGS.fetched || 'never');
+if (LISTINGS.model.estBills) el('est-bills').textContent = LISTINGS.model.estBills;
+
+function render() {
+  const walkRadius = state.walkMin * WALK_M_PER_MIN;
+  const walkReachableOnly = document.getElementById('walk-reachable-only').checked;
+
+  // Lines
+  for (const [id, layer] of Object.entries(lineLayers)) {
+    state.activeLines.has(id) ? layer.addTo(map) : layer.remove();
+  }
+
+  // Stations + walk circles
+  stationLayer.clearLayers();
+  walkLayer.clearLayers();
+  for (const st of stations) {
+    if (!onActiveLine(st)) continue;
+    const best = bestTime(st);
+    const reachable = best && best.min <= state.maxMin;
+    if (document.getElementById('show-walk').checked && (!walkReachableOnly || reachable)) {
+      L.circle([st.lat, st.lon], { renderer: walkRenderer, radius: walkRadius, stroke: false, fillColor: getCss('--walk'), fillOpacity: 1, interactive: false })
+        .addTo(walkLayer);
+    }
+    if (document.getElementById('show-stations').checked && !targetIds.has(st.id)) {
+      L.circleMarker([st.lat, st.lon], {
+        pane: 'stations', radius: 4.5, weight: 2,
+        color: reachable ? '#111' : '#999', fillColor: '#fff', fillOpacity: 1,
+      }).bindPopup(stationPopup(st))
+        .addTo(stationLayer);
+    }
+  }
+
+  // Boroughs: reachable if any station inside is within maxMin on an active line.
+  const reachableBoroughs = [];
+  boroughLayer.eachLayer(layer => {
+    const name = layer.feature.properties.name;
+    const inside = stations.filter(s => s.borough === name && onActiveLine(s))
+      .map(s => ({ st: s, best: bestTime(s) }))
+      .sort((a, b) => a.best.min - b.best.min);
+    const top = inside[0];
+    const reachable = top && top.best.min <= state.maxMin;
+    const show = reachable && document.getElementById('show-boroughs').checked;
+    layer.setStyle(show
+      ? { color: getCss('--borough'), weight: 2, fillColor: getCss('--borough'), fillOpacity: .18, dashArray: null }
+      : { color: '#888', weight: 1, fillOpacity: 0, dashArray: '3 3' });
+    const quick = inside.filter(x => x.best.min <= state.maxMin);
+    layer.setPopupContent(
+      `<b>${name}</b><br>` + (top
+        ? (reachable
+            ? `${quick.length} station${quick.length > 1 ? 's' : ''} within ${state.maxMin} min<br>Fastest: ${top.st.name} (${fmtMin(top.best.min)}, ${lines[top.best.line].name} → ${top.best.to})`
+            : `Nearest option: ${top.st.name} (${fmtMin(top.best.min)})`)
+        : 'No stations on these lines'));
+    if (reachable) reachableBoroughs.push({ name, top });
+  });
+
+  reachableBoroughs.sort((a, b) => a.top.best.min - b.top.best.min);
+  document.getElementById('borough-count').textContent = reachableBoroughs.length;
+  document.getElementById('borough-list').innerHTML = reachableBoroughs
+    .map(b => `<li><b>${b.name}</b> — ${b.top.st.name}, ${fmtMin(b.top.best.min)}</li>`).join('');
+
+  renderFlats();
+}
+
+function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+// ---------- Controls ----------
+const toggles = document.getElementById('line-toggles');
+for (const line of Object.values(lines)) {
+  const row = document.createElement('label');
+  row.className = 'row';
+  row.innerHTML = `<input type="checkbox" checked><span class="swatch" style="background:${line.colour};${line.id === 'circle' ? 'outline:1px solid #c9a800' : ''}"></span>${line.name}`;
+  row.querySelector('input').addEventListener('change', e => {
+    e.target.checked ? state.activeLines.add(line.id) : state.activeLines.delete(line.id);
+    render();
+  });
+  toggles.appendChild(row);
+}
+
+document.getElementById('max-min').addEventListener('input', e => {
+  state.maxMin = +e.target.value;
+  document.getElementById('max-min-val').textContent = state.maxMin + ' min';
+  document.querySelectorAll('.max-min-inline').forEach(el => el.textContent = state.maxMin);
+  render();
+});
+document.getElementById('walk-min').addEventListener('input', e => {
+  state.walkMin = +e.target.value;
+  const m = state.walkMin * WALK_M_PER_MIN;
+  document.getElementById('walk-min-val').textContent = `${state.walkMin} min · ${m} m`;
+  document.getElementById('walk-legend').textContent = `${state.walkMin} min walk from a station`;
+  render();
+});
+['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-rent', 'flats-perhead', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove']
+  .forEach(id => document.getElementById(id).addEventListener('change', render));
+
+render();
+</script>
+</body>
+</html>
