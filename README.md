@@ -17,6 +17,16 @@ Opens http://localhost:8765. (Double-clicking `index.html` also works — data i
 - **Borough highlighted** if it contains at least one station within the max journey time.
 - **Walking shading:** fixed-radius circles (80 m/min, so 10 min = 800 m) around each station.
 
+## Fare zones
+
+Zone areas are traced from every TfL Tube/DLR/Overground/Elizabeth line station (`raw-allstations.json`): each spot takes the zone of its nearest station (Voronoi cells, capped at 2.2 km so the outskirts don't sprawl), and boundaries are drawn between neighbouring stations in different zones. Approximate — fares actually depend on the station you use. Dual-zone stations (2/3) count as the cheaper zone.
+
+The fares table and popups use TfL's 2026 adult caps and Travelcards ([PDF](https://content.tfl.gov.uk/adult-fares.pdf)) for Zones 1–N, since all four destination stations are in Zone 1. Update `FARES` in `build_data.py` each March.
+
+## Bouldering gyms
+
+`data/gyms.js` is a hand-checked list of ~30 indoor bouldering gyms (locations from OpenStreetMap, names/status checked against operators' sites, Sept 2026). Shown only in highlighted boroughs unless "Show all London gyms" is ticked; red pins also have roped climbing. Edit the file to add or fix gyms.
+
 ## Flats
 
 `python3 fetch_listings.py` pulls live furnished 2-bed whole flats/houses from OpenRent and Rightmove within 1 km of a mapped station (≤ £3,000 pcm) into `data/listings.js`. Re-run it to refresh — listings let quickly.

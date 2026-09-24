@@ -75,6 +75,15 @@
   .panel details summary { cursor: pointer; color: var(--text); font-weight: 600; }
   .panel details p { margin: 4px 0; }
   .panel a { color: #1f77b4; }
+  .zone-label { background: rgba(255,255,255,.85); color: #333; border: 1.5px solid #555; border-radius: 10px; font: 700 11px/1 -apple-system, sans-serif; padding: 2px 6px; white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .leaflet-zones-pane { opacity: .38; }
+  table.fares { width: 100%; border-collapse: collapse; font-size: 12px; margin: 4px 0; }
+  table.fares th { text-align: right; font-weight: 600; color: var(--muted); padding: 2px 0; }
+  table.fares th:first-child, table.fares td:first-child { text-align: left; }
+  table.fares td { text-align: right; padding: 2px 0; border-top: 1px solid var(--border); }
+  .zone-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .gym-pin { width: 22px; height: 22px; border-radius: 50%; background: #222; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1; }
+  .gym-pin.ropes { background: #c0392b; }
 
   @media (max-width: 600px) {
     .panel { top: auto; bottom: 0; right: 0; left: 0; width: auto; max-height: 45%; border-radius: 12px 12px 0 0; }
@@ -106,6 +115,20 @@
   <label class="row"><input type="checkbox" id="walk-reachable-only"> Shade reachable stations only</label>
   <label class="row"><input type="checkbox" id="show-stations" checked> Station markers</label>
 
+  <h2>Fare zones</h2>
+  <label class="row"><input type="checkbox" id="show-zone-lines" checked><span>Zone boundaries &amp; labels</span></label>
+  <label class="row"><input type="checkbox" id="show-zone-fill"><span>Shade zones by colour</span></label>
+  <table class="fares">
+    <thead><tr><th>Travel to Zone 1 from</th><th>Daily cap</th><th>Weekly</th><th>Monthly</th></tr></thead>
+    <tbody id="fare-rows"></tbody>
+  </table>
+  <p class="sub" style="margin:2px 0 0">Per person, TfL adult pay-as-you-go caps / Travelcards 2026 (<a href="https://content.tfl.gov.uk/adult-fares.pdf" target="_blank" rel="noopener">source</a>). All four stations are Zone 1, so you pay Zones 1–N where N is your home station's zone. Dual-zone stations (e.g. 2/3) count as the cheaper zone. Zone areas are approximate: each spot takes the zone of its nearest station.</p>
+
+  <h2>Bouldering gyms (<span id="gym-count">0</span>)</h2>
+  <label class="row"><input type="checkbox" id="show-gyms" checked><span class="gym-pin" style="width:18px;height:18px;font-size:11px">🧗</span><span>In highlighted boroughs</span></label>
+  <label class="row"><input type="checkbox" id="gyms-all"><span>Show all London gyms</span></label>
+  <p class="sub" style="margin:2px 0 0"><span class="gym-pin ropes" style="display:inline-flex;width:14px;height:14px;font-size:8px;vertical-align:-3px">🧗</span> red = roped climbing too. Checked <span id="gyms-checked"></span>.</p>
+
   <h2>Legend</h2>
   <div class="legend-item"><span class="legend-box" style="background:var(--borough);opacity:.35;border:2px solid var(--borough)"></span><span>Borough with a station ≤ <span class="max-min-inline">30</span> min away</span></div>
   <div class="legend-item"><span class="legend-box" style="background:var(--walk);opacity:.45;border-radius:50%"></span><span id="walk-legend">10 min walk from a station</span></div>
@@ -134,6 +157,8 @@
 <script src="data/network.js"></script>
 <script src="data/boroughs.js"></script>
 <script src="data/listings.js"></script>
+<script src="data/gyms.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6/dist/d3-delaunay.min.js"></script>
 <script>
 const WALK_M_PER_MIN = 80; // ~4.8 km/h
 const { lines, stations, targets } = window.NETWORK;
@@ -173,6 +198,10 @@ map.createPane('lines').style.zIndex = 420;
 map.createPane('stations').style.zIndex = 450;
 map.createPane('targets').style.zIndex = 460;
 map.createPane('flats').style.zIndex = 620; // above markers pane so pins stay clickable
+map.createPane('zones').style.zIndex = 340;
+map.getPane('zones').classList.add('leaflet-zones-pane');
+map.createPane('zoneLines').style.zIndex = 360;
+map.createPane('gyms').style.zIndex = 630;
 
 const walkRenderer = L.svg({ pane: 'walk' });
 
@@ -239,8 +268,139 @@ function stationPopup(st) {
     .sort((a, b) => a[1].min - b[1].min)
     .map(([l, t]) => `<li><span class="swatch" style="background:${lines[l].colour}"></span>${lines[l].name}: <b>${fmtMin(t.min)}</b> to ${t.to}</li>`)
     .join('');
-  return `<b>${st.name}</b>${st.borough ? `<br><span style="color:#666">${st.borough}${st.zone ? ' · Zone ' + st.zone : ''}</span>` : ''}
+  return `<b>${st.name}</b>${st.borough ? `<br><span style="color:#666">${st.borough}</span>` : ''}
+    <br><span style="color:#666">${zoneFareText(st)}</span>
     <ul class="popup-times">${rows}</ul>`;
+}
+
+// ---------- Fare zones ----------
+const FARES = window.NETWORK.fares.zones1to;
+const ZONE_COLOURS = { 1: '#b2182b', 2: '#ef8a62', 3: '#fddbc7', 4: '#92c5de', 5: '#4393c3', 6: '#2166ac', 7: '#8073ac', 8: '#b2abd2', 9: '#542788' };
+const gbp2 = n => '£' + n.toFixed(2);
+function zoneFareText(st) {
+  if (st.zoneMin == null) return 'Outside TfL zones (National Rail fares)';
+  const f = FARES[st.zoneMin];
+  return `Zone ${st.zone} · Zones 1–${st.zoneMin}: ${gbp2(f.monthly)}/month, ${gbp2(f.dailyCap)}/day cap`;
+}
+document.getElementById('fare-rows').innerHTML = Object.entries(FARES)
+  .filter(([n]) => n !== '1')
+  .map(([n, f]) => `<tr><td><span class="zone-dot" style="background:${ZONE_COLOURS[n]}"></span>Zone ${n}</td><td>${gbp2(f.dailyCap)}</td><td>${gbp2(f.weekly)}</td><td>${gbp2(f.monthly)}</td></tr>`)
+  .join('').replace(`<td><span class="zone-dot" style="background:${ZONE_COLOURS[2]}"></span>Zone 2</td>`, `<td><span class="zone-dot" style="background:${ZONE_COLOURS[1]}"></span><span class="zone-dot" style="background:${ZONE_COLOURS[2]}"></span>Zone 1–2</td>`);
+
+const zoneFillLayer = L.layerGroup();
+const zoneLineLayer = L.layerGroup();
+(function buildZones() {
+  if (!window.d3 || !d3.Delaunay) return; // CDN failed: skip zones, rest of the map still works
+  const pts = window.NETWORK.zonePoints; // [lat, lon, zoneMin|null, label]
+  const lat0 = 51.5, kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110574;
+  const toXY = (lat, lon) => [lon * kx, lat * ky];
+  const toLL = ([x, y]) => [y / ky, x / kx];
+  const xy = pts.map(p => toXY(p[0], p[1]));
+  const R = 2200; // each station's area is capped at ~2.2 km so sparse outskirts don't sprawl
+  const xs = xy.map(p => p[0]), ys = xy.map(p => p[1]);
+  const delaunay = d3.Delaunay.from(xy);
+  const vor = delaunay.voronoi([Math.min(...xs) - R, Math.min(...ys) - R, Math.max(...xs) + R, Math.max(...ys) + R]);
+
+  // Sutherland–Hodgman: clip the (convex) Voronoi cell to a 32-gon circle around its station.
+  function clipToCircle(poly, [cx, cy]) {
+    const circle = Array.from({ length: 32 }, (_, k) => [cx + R * Math.cos(2 * Math.PI * k / 32), cy + R * Math.sin(2 * Math.PI * k / 32)]);
+    let out = poly;
+    for (let k = 0; k < circle.length && out.length; k++) {
+      const a = circle[k], b = circle[(k + 1) % circle.length];
+      const inside = p => (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0;
+      const cross = (p, q) => {
+        const d1 = [q[0] - p[0], q[1] - p[1]], d2 = [b[0] - a[0], b[1] - a[1]];
+        const t = ((a[0] - p[0]) * d2[1] - (a[1] - p[1]) * d2[0]) / (d1[0] * d2[1] - d1[1] * d2[0]);
+        return [p[0] + t * d1[0], p[1] + t * d1[1]];
+      };
+      const input = out; out = [];
+      for (let m = 0; m < input.length; m++) {
+        const cur = input[m], prev = input[(m + input.length - 1) % input.length];
+        if (inside(cur)) { if (!inside(prev)) out.push(cross(prev, cur)); out.push(cur); }
+        else if (inside(prev)) out.push(cross(prev, cur));
+      }
+    }
+    return out;
+  }
+
+  const cells = pts.map((p, i) => {
+    const poly = vor.cellPolygon(i);
+    return poly ? clipToCircle(poly.slice(0, -1), xy[i]) : [];
+  });
+  cells.forEach((c, i) => {
+    const z = pts[i][2];
+    if (z == null || c.length < 3) return;
+    L.polygon(c.map(toLL), { pane: 'zones', stroke: false, fillColor: ZONE_COLOURS[z], fillOpacity: 1, interactive: false }).addTo(zoneFillLayer);
+  });
+
+  // Boundaries: the shared edge between neighbouring cells of different zones lies on their
+  // bisector, so it's the cell vertices equidistant (within 1 m) from both stations.
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  for (let i = 0; i < pts.length; i++) {
+    for (const j of delaunay.neighbors(i)) {
+      if (j <= i || pts[i][2] === pts[j][2]) continue;
+      if (pts[i][2] == null && pts[j][2] == null) continue;
+      const shared = cells[i].filter(v => Math.abs(dist(v, xy[i]) - dist(v, xy[j])) < 1);
+      if (shared.length >= 2) {
+        L.polyline(shared.slice(0, 2).map(toLL), { pane: 'zoneLines', color: '#222', weight: 2.5, opacity: .85, dashArray: '8 5', interactive: false }).addTo(zoneLineLayer);
+      }
+    }
+  }
+
+  // Labels: interior stations (every neighbour in the same zone), spaced out.
+  const placed = [];
+  const order = pts.map((_, i) => i).sort((a, b) => (pts[a][2] ?? 99) - (pts[b][2] ?? 99));
+  for (const i of order) {
+    const z = pts[i][2];
+    if (z == null || z === 1 && placed.some(k => pts[k][2] === 1)) continue;
+    if ([...delaunay.neighbors(i)].some(j => pts[j][2] !== z)) continue;
+    if (placed.some(k => dist(xy[k], xy[i]) < 6500)) continue;
+    placed.push(i);
+    L.marker([pts[i][0], pts[i][1]], {
+      pane: 'zoneLines', interactive: false,
+      icon: L.divIcon({ className: '', html: `<div class="zone-label" style="border-color:${ZONE_COLOURS[z]}">Zone ${z}</div>`, iconSize: null }),
+    }).addTo(zoneLineLayer);
+  }
+})();
+
+// ---------- Bouldering gyms ----------
+const GYMS = (window.GYMS && window.GYMS.gyms) || [];
+document.getElementById('gyms-checked').textContent = (window.GYMS && window.GYMS.checked) || '';
+const gymLayer = L.layerGroup().addTo(map);
+for (const g of GYMS) {
+  const f = window.BOROUGHS.features.find(f => pointInFeature(g.lon, g.lat, f.geometry));
+  g.borough = f ? f.properties.name : null;
+}
+function haversineM(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180, dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+function renderGyms(reachableNames) {
+  gymLayer.clearLayers();
+  const showAll = document.getElementById('gyms-all').checked;
+  let n = 0;
+  if (!document.getElementById('show-gyms').checked && !showAll) { document.getElementById('gym-count').textContent = 0; return; }
+  for (const g of GYMS) {
+    if (!showAll && !reachableNames.has(g.borough)) continue;
+    n++;
+    let near = null;
+    for (const st of stations) {
+      if (!onActiveLine(st)) continue;
+      const d = haversineM(g.lat, g.lon, st.lat, st.lon);
+      if (!near || d < near.d) near = { st, d };
+    }
+    const best = near && bestTime(near.st);
+    const walk = near ? Math.max(1, Math.round(near.d / WALK_M_PER_MIN)) : null;
+    L.marker([g.lat, g.lon], {
+      pane: 'gyms', riseOnHover: true,
+      icon: L.divIcon({ className: '', html: `<div class="gym-pin${g.ropes ? ' ropes' : ''}">🧗</div>`, iconSize: [22, 22], iconAnchor: [11, 11], popupAnchor: [0, -12] }),
+    }).bindPopup(`<b>${esc(g.name)}</b><br><span style="color:#666">${g.ropes ? 'Bouldering + roped climbing' : 'Bouldering'}${g.borough ? ' · ' + esc(g.borough) : ''}</span>
+      ${g.note ? `<br><span style="color:#666">${esc(g.note)}</span>` : ''}
+      ${near ? `<br>${walk} min walk to ${esc(near.st.name)}${best ? ` · ~${Math.round(best.min)} min to ${esc(best.to)}` : ''}` : ''}
+      <br><a href="${esc(g.url)}" target="_blank" rel="noopener">Website ↗</a>`).addTo(gymLayer);
+  }
+  document.getElementById('gym-count').textContent = n;
 }
 
 for (const t of targets) {
@@ -264,6 +424,12 @@ const gbp = n => '£' + Math.round(n).toLocaleString('en-GB');
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function flatPopup(f) {
+  const flatZoneText = f => {
+    let st = null, d = Infinity;
+    for (const s of stations) if (s.name === f.station) { const dd = haversineM(f.lat, f.lon, s.lat, s.lon); if (dd < d) { d = dd; st = s; } }
+    if (!st) return '';
+    return st.zoneMin == null ? 'Outside TfL zones' : `Zone ${st.zone} · travel ${gbp2(FARES[st.zoneMin].monthly)}/month each (not in budget above)`;
+  };
   const [tierText, tierColour] = TIER_LABEL[f.tier];
   const estBills = gbp(LISTINGS.model.estBills);
   const billsNote = f.billsIncluded ? 'Bills included — check which'
@@ -283,6 +449,7 @@ function flatPopup(f) {
     </table>
     <div class="muted">${esc(f.furnishing)}${f.bathrooms ? ` · ${f.bathrooms} bath` : ''}${avail}${f.minTenancyMonths ? ` · min ${f.minTenancyMonths} mo` : ''}${f.agent ? ` · ${esc(f.agent)}` : ''}${f.updated ? ` · ${esc(f.updated)}` : ''}</div>
     <div class="muted">${walkMin} min walk to ${esc(f.station)} · then ~${Math.round(f.stationMin)} min to ${esc(f.stationTo)}</div>
+    <div class="muted">${flatZoneText(f)}</div>
     <a class="cta" href="${esc(f.url)}" target="_blank" rel="noopener">View on ${esc(f.source)} ↗</a>
   </div>`;
 }
@@ -379,6 +546,9 @@ function render() {
     .map(b => `<li><b>${b.name}</b> — ${b.top.st.name}, ${fmtMin(b.top.best.min)}</li>`).join('');
 
   renderFlats();
+  renderGyms(new Set(reachableBoroughs.map(b => b.name)));
+  document.getElementById('show-zone-lines').checked ? zoneLineLayer.addTo(map) : zoneLineLayer.remove();
+  document.getElementById('show-zone-fill').checked ? zoneFillLayer.addTo(map) : zoneFillLayer.remove();
 }
 
 function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
@@ -409,7 +579,7 @@ document.getElementById('walk-min').addEventListener('input', e => {
   document.getElementById('walk-legend').textContent = `${state.walkMin} min walk from a station`;
   render();
 });
-['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-rent', 'flats-perhead', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove']
+['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-rent', 'flats-perhead', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove', 'show-zone-lines', 'show-zone-fill', 'show-gyms', 'gyms-all']
   .forEach(id => document.getElementById(id).addEventListener('change', render));
 
 render();

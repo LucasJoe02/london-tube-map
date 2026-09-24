@@ -126,12 +126,46 @@ for line_id, (line_name, colour) in LINES.items():
         "geometry": [[[round(lat, 6), round(lon, 6)] for lon, lat in g] for g in geometry],
     }
 
+# ---------- Fare zones ----------
+# Every TfL rail station (all lines, not just the mapped ones) so zone areas are traced properly.
+def zone_min(z):
+    """'2+3' / '2/3' dual-zone stations are charged as the cheaper (lower) zone."""
+    if not z:
+        return None
+    return min(int(x) for x in z.replace("/", "+").split("+"))
+
+
+all_raw = json.loads((DATA / "raw-allstations.json").read_text())
+all_raw = all_raw["stopPoints"] if isinstance(all_raw, dict) else all_raw
+zone_points = {}
+for sp in all_raw:
+    if sp["stopType"] not in ("NaptanMetroStation", "NaptanRailStation"):
+        continue
+    z = next((p["value"] for p in sp.get("additionalProperties", []) if p["key"] == "Zone"), None)
+    key = station_key(sp)
+    if key in zone_points:
+        continue
+    zone_points[key] = [round(sp["lat"], 5), round(sp["lon"], 5), zone_min(z), z or ""]
+
+for st in stations.values():
+    st["zoneMin"] = zone_min(st["zone"])
+
+# TfL adult fares 2026 (content.tfl.gov.uk/adult-fares.pdf), Zones 1-N — all four target stations are Zone 1.
+FARES = {  # zones: (daily peak cap, 7-day travelcard, monthly travelcard)
+    1: (8.90, 44.70, 171.70), 2: (8.90, 44.70, 171.70), 3: (10.50, 52.50, 201.60),
+    4: (12.80, 64.20, 246.60), 5: (15.30, 76.40, 293.40), 6: (16.30, 81.60, 313.40),
+    7: (17.80, 88.90, 341.40), 8: (21.00, 104.90, 402.90), 9: (23.30, 116.40, 447.00),
+}
+
 network = {
     "targets": [{"id": k, "name": v, "lat": stations[k]["lat"], "lon": stations[k]["lon"]} for k, v in TARGETS.items()]
     + [{"id": k, "name": v, "lat": stations[k]["lat"], "lon": stations[k]["lon"], "secondary": True}
        for per_line in LINE_TARGETS.values() for k, v in per_line.items()],
     "lines": lines_out,
     "stations": sorted(stations.values(), key=lambda s: s["name"]),
+    "zonePoints": list(zone_points.values()),
+    "fares": {"source": "TfL adult fares 2026", "url": "https://content.tfl.gov.uk/adult-fares.pdf",
+              "zones1to": {n: {"dailyCap": d, "weekly": w, "monthly": m} for n, (d, w, m) in FARES.items()}},
 }
 (DATA / "network.js").write_text("window.NETWORK = " + json.dumps(network, separators=(",", ":")) + ";\n")
 
