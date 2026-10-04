@@ -25,6 +25,12 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, li
 MAX_RENT = 3000        # pcm; above this even a per-head split busts the single's budget
 MAX_DIST_M = 1000      # walking circles are 800 m; allow a little slack ("or thereabouts")
 
+# Cycling to Liverpool Street: also keep flats within a 20-min ride even if no station is near.
+LIVERPOOL_ST = (51.5178, -0.0823)
+CYCLE_KMH = 15            # relaxed city pace incl. lights
+CYCLE_ROUTE_FACTOR = 1.3  # road distance vs straight line
+CYCLE_MAX_MIN = 20
+
 # Budget model (see README): rent split 40/60 single/couple, bills split per head.
 SINGLE_BUDGET = 1000
 BUDGET_SLACK = 50      # "around £1,000"
@@ -92,8 +98,15 @@ def budget(price, bills_included):
 def nearest_station(stations, lat, lon):
     dist, st = min(((haversine_m(lat, lon, s["lat"], s["lon"]), s) for s in stations), key=lambda t: t[0])
     best_line, best = min(st["times"].items(), key=lambda kv: kv[1]["min"])
+    cycle_km = haversine_m(lat, lon, *LIVERPOOL_ST) / 1000 * CYCLE_ROUTE_FACTOR
     return {"station": st["name"], "stationDistM": round(dist), "stationMin": best["min"],
-            "stationLine": best_line, "stationTo": best["to"]}
+            "stationLine": best_line, "stationTo": best["to"],
+            "cycleMin": round(cycle_km / CYCLE_KMH * 60, 1)}
+
+
+def in_range(near):
+    """Near a mapped station, or within a 20-min cycle of Liverpool Street."""
+    return near["stationDistM"] <= MAX_DIST_M or near["cycleMin"] <= CYCLE_MAX_MIN
 
 
 def fetch_openrent(stations):
@@ -111,7 +124,7 @@ def fetch_openrent(stations):
             continue
         lat, lon = cols["PROPERTYLISTLATITUDES"][i], cols["PROPERTYLISTLONGITUDES"][i]
         near = nearest_station(stations, lat, lon)
-        if near["stationDistM"] > MAX_DIST_M:
+        if not in_range(near):
             continue
         b = budget(cols["prices"][i], cols["bills"][i] == 1)
         if not b["tier"]:
@@ -205,7 +218,7 @@ def fetch_rightmove(stations):
             continue
         lat, lon = p["location"]["latitude"], p["location"]["longitude"]
         near = nearest_station(stations, lat, lon)
-        if near["stationDistM"] > MAX_DIST_M:
+        if not in_range(near):
             skipped["far"] += 1
             continue
         bills = bills_from_text(text)
@@ -282,7 +295,8 @@ def main():
         "fetched": max((d for d in sources.values() if d), default=today),
         "sources": sources,
         "model": {"singleBudget": SINGLE_BUDGET, "slack": BUDGET_SLACK, "singleRentShare": SINGLE_RENT_SHARE,
-                  "estBills": EST_BILLS_PCM, "maxDistM": MAX_DIST_M},
+                  "estBills": EST_BILLS_PCM, "maxDistM": MAX_DIST_M,
+                  "cycle": {"from": LIVERPOOL_ST, "kmh": CYCLE_KMH, "routeFactor": CYCLE_ROUTE_FACTOR, "maxMin": CYCLE_MAX_MIN}},
         "listings": listings,
     }
     (DATA / "listings.js").write_text("window.LISTINGS = " + json.dumps(out, separators=(",", ":")) + ";\n")

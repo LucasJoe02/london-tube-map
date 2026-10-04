@@ -29,7 +29,9 @@ The fares table and popups use TfL's 2026 adult caps and Travelcards ([PDF](http
 
 ## Flats
 
-`python3 fetch_listings.py` pulls live furnished 2-bed whole flats/houses from OpenRent and Rightmove within 1 km of a mapped station (≤ £3,000 pcm) into `data/listings.js`. Re-run it to refresh — listings let quickly.
+`python3 fetch_listings.py` pulls live furnished 2-bed whole flats/houses from OpenRent and Rightmove (≤ £3,000 pcm) that are within 1 km of a mapped station **or** within a 20-minute cycle of Liverpool Street, into `data/listings.js`. Re-run it to refresh — listings let quickly.
+
+The cycle zone assumes 15 km/h on roads ~30% longer than the straight line, so it's a ~3.85 km circle around Liverpool Street (orange dashed ring on the map). Each flat's popup shows its estimated ride time. Tune `CYCLE_*` at the top of `fetch_listings.py`.
 
 Budget model (a couple + a single sharing a 2-bed): rent split **60/40** couple/single — the usual middle ground between per-room (50/50) and per-head (⅔/⅓) — and bills split **per head**. Where bills aren't included they're estimated at £370/month for the flat. Pins are coloured:
 

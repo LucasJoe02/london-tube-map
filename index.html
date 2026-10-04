@@ -13,6 +13,7 @@
     --border: #e2e2e6;
     --borough: #1f77b4;
     --walk: #0a9d58;
+    --cycle: #e67e22;
     --tier-in: #1a9641;
     --tier-rent: #f39c12;
     --tier-perhead: #8e44ad;
@@ -114,6 +115,7 @@
   <label class="row"><input type="checkbox" id="show-walk" checked> Walking-distance shading</label>
   <label class="row"><input type="checkbox" id="walk-reachable-only"> Shade reachable stations only</label>
   <label class="row"><input type="checkbox" id="show-stations" checked> Station markers</label>
+  <label class="row"><input type="checkbox" id="show-cycle" checked><span class="legend-box" style="border:2px dashed var(--cycle);background:rgba(230,126,34,.12);border-radius:50%;width:16px;height:16px"></span><span>20-min cycle to Liverpool St</span></label>
 
   <h2>Fare zones</h2>
   <label class="row"><input type="checkbox" id="show-zone-lines" checked><span>Zone boundaries &amp; labels</span></label>
@@ -141,6 +143,8 @@
   <label class="row"><input type="checkbox" id="src-rightmove" checked><span>Rightmove (<span id="n-rightmove">0</span>)</span></label>
   <label class="row"><input type="checkbox" id="flats-bills-only"><span class="flat-pin bills" style="background:#ccc"></span><span>Bills included only</span></label>
   <label class="row"><input type="checkbox" id="flats-reachable" checked><span>Only near stations within max journey time</span></label>
+  <label class="row"><input type="checkbox" id="flats-cycle" checked><span>…plus any within a 20-min cycle of Liverpool St</span></label>
+  <label class="row"><input type="checkbox" id="flats-cycle-only"><span>Only flats within cycling range</span></label>
   <details>
     <summary>How the budget is worked out</summary>
     <p>There's no fixed rule for a couple + single sharing a 2-bed. The common options are: split by room (50/50), by space (~60/40 couple/single), or by head (⅔ / ⅓). This map uses the middle ground: <b>rent 60/40</b>, with <b>bills split per head</b> (⅓ each, since they scale with people).</p>
@@ -193,6 +197,7 @@ L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 
 map.createPane('boroughs').style.zIndex = 350;
 map.createPane('walk').style.zIndex = 390;
+map.createPane('cycle').style.zIndex = 395;
 map.getPane('walk').classList.add('leaflet-walk-pane');
 map.createPane('lines').style.zIndex = 420;
 map.createPane('stations').style.zIndex = 450;
@@ -260,6 +265,17 @@ for (const line of Object.values(lines)) {
 }
 
 const walkLayer = L.layerGroup().addTo(map);
+
+// ---------- 20-min cycle zone around Liverpool Street ----------
+const CYCLE = (window.LISTINGS && window.LISTINGS.model && window.LISTINGS.model.cycle) || { from: [51.5178, -0.0823], kmh: 15, routeFactor: 1.3, maxMin: 20 };
+const cycleRadiusM = CYCLE.kmh * CYCLE.maxMin / 60 / CYCLE.routeFactor * 1000; // straight-line radius
+const cycleLayer = L.layerGroup([
+  L.circle(CYCLE.from, { pane: 'cycle', radius: cycleRadiusM, color: '#d35400', weight: 3.5, opacity: .95, dashArray: '10 6', fillColor: '#e67e22', fillOpacity: .09, interactive: false }),
+  L.marker([CYCLE.from[0] + cycleRadiusM / 110574, CYCLE.from[1]], {
+    pane: 'cycle', interactive: false,
+    icon: L.divIcon({ className: '', html: `<div class="zone-label" style="border-color:#e67e22;color:#a04000">🚲 ${CYCLE.maxMin} min cycle to Liverpool St</div>`, iconSize: null }),
+  }),
+]);
 const stationLayer = L.layerGroup().addTo(map);
 const targetLayer = L.layerGroup().addTo(map);
 
@@ -449,6 +465,7 @@ function flatPopup(f) {
     </table>
     <div class="muted">${esc(f.furnishing)}${f.bathrooms ? ` · ${f.bathrooms} bath` : ''}${avail}${f.minTenancyMonths ? ` · min ${f.minTenancyMonths} mo` : ''}${f.agent ? ` · ${esc(f.agent)}` : ''}${f.updated ? ` · ${esc(f.updated)}` : ''}</div>
     <div class="muted">${walkMin} min walk to ${esc(f.station)} · then ~${Math.round(f.stationMin)} min to ${esc(f.stationTo)}</div>
+    ${f.cycleMin != null ? `<div class="muted">🚲 ~${Math.round(f.cycleMin)} min cycle to Liverpool St${f.cycleMin <= CYCLE.maxMin ? '' : ' (outside 20-min zone)'}</div>` : ''}
     <div class="muted">${flatZoneText(f)}</div>
     <a class="cta" href="${esc(f.url)}" target="_blank" rel="noopener">View on ${esc(f.source)} ↗</a>
   </div>`;
@@ -459,13 +476,18 @@ function renderFlats() {
   const show = { in: el('flats-in').checked, rent: el('flats-rent').checked, perhead: el('flats-perhead').checked };
   const billsOnly = el('flats-bills-only').checked;
   const reachableOnly = el('flats-reachable').checked;
+  const includeCycle = el('flats-cycle').checked;
+  const cycleOnly = el('flats-cycle-only').checked;
   const counts = { in: 0, rent: 0, perhead: 0 };
   const srcCounts = { OpenRent: 0, Rightmove: 0 };
   const srcOn = { OpenRent: el('src-openrent').checked, Rightmove: el('src-rightmove').checked };
   let shown = 0;
   for (const f of LISTINGS.listings) {
     if (billsOnly && !f.billsIncluded) continue;
-    if (reachableOnly && f.stationMin > state.maxMin) continue;
+    const inCycle = f.cycleMin != null && f.cycleMin <= CYCLE.maxMin;
+    if (cycleOnly && !inCycle) continue;
+    if (!includeCycle && !cycleOnly && f.stationDistM > LISTINGS.model.maxDistM) continue; // only here for cycling
+    if (reachableOnly && f.stationMin > state.maxMin && !((includeCycle || cycleOnly) && inCycle)) continue;
     srcCounts[f.source]++;
     if (!srcOn[f.source]) continue;
     counts[f.tier]++;
@@ -491,6 +513,7 @@ if (LISTINGS.model.estBills) el('est-bills').textContent = LISTINGS.model.estBil
 function render() {
   const walkRadius = state.walkMin * WALK_M_PER_MIN;
   const walkReachableOnly = document.getElementById('walk-reachable-only').checked;
+  document.getElementById('show-cycle').checked ? cycleLayer.addTo(map) : cycleLayer.remove();
 
   // Lines
   for (const [id, layer] of Object.entries(lineLayers)) {
@@ -579,7 +602,7 @@ document.getElementById('walk-min').addEventListener('input', e => {
   document.getElementById('walk-legend').textContent = `${state.walkMin} min walk from a station`;
   render();
 });
-['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-rent', 'flats-perhead', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove', 'show-zone-lines', 'show-zone-fill', 'show-gyms', 'gyms-all']
+['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-rent', 'flats-perhead', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove', 'show-cycle', 'flats-cycle', 'flats-cycle-only', 'show-zone-lines', 'show-zone-fill', 'show-gyms', 'gyms-all']
   .forEach(id => document.getElementById(id).addEventListener('change', render));
 
 render();
