@@ -15,8 +15,6 @@
     --walk: #0a9d58;
     --cycle: #e67e22;
     --tier-in: #1a9641;
-    --tier-rent: #f39c12;
-    --tier-perhead: #8e44ad;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--text); }
@@ -59,8 +57,6 @@
 
   .flat-pin { width: 14px; height: 14px; border-radius: 4px; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 1px 3px rgba(0,0,0,.4); }
   .flat-pin.in { background: var(--tier-in); }
-  .flat-pin.rent { background: var(--tier-rent); }
-  .flat-pin.perhead { background: var(--tier-perhead); }
   .flat-pin.bills::after { content: ''; position: absolute; top: -5px; right: -5px; width: 7px; height: 7px; border-radius: 50%; background: #1f77b4; border: 1.5px solid #fff; }
   .flat-pin { position: relative; }
   .flat-popup { width: 260px; }
@@ -136,9 +132,8 @@
   <div class="legend-item"><span class="legend-box" style="background:var(--walk);opacity:.45;border-radius:50%"></span><span id="walk-legend">10 min walk from a station</span></div>
 
   <h2>Furnished 2-bed flats (<span id="flat-count">0</span>)</h2>
-  <label class="row"><input type="checkbox" id="flats-in" checked><span class="flat-pin in"></span><span>Single pays ≤ ~£1,000 incl. bills (<span id="n-in">0</span>)</span></label>
-  <label class="row"><input type="checkbox" id="flats-rent" checked><span class="flat-pin rent"></span><span>Rent fits, bills push it over (<span id="n-rent">0</span>)</span></label>
-  <label class="row"><input type="checkbox" id="flats-perhead"><span class="flat-pin perhead"></span><span>Only fits if split per head (<span id="n-perhead">0</span>)</span></label>
+  <p class="sub" style="margin:0 0 6px">Only flats where the single pays ≤ ~£1,050/month incl. bills, with no move-in date given or one before <span id="move-in-before">14 Nov</span>.</p>
+  <label class="row"><input type="checkbox" id="flats-in" checked><span class="flat-pin in"></span><span>Show flats (<span id="n-in">0</span>)</span></label>
   <label class="row"><input type="checkbox" id="src-openrent" checked><span>OpenRent (<span id="n-openrent">0</span>)</span></label>
   <label class="row"><input type="checkbox" id="src-rightmove" checked><span>Rightmove (<span id="n-rightmove">0</span>)</span></label>
   <label class="row"><input type="checkbox" id="flats-bills-only"><span class="flat-pin bills" style="background:#ccc"></span><span>Bills included only</span></label>
@@ -149,7 +144,6 @@
     <summary>How the budget is worked out</summary>
     <p>There's no fixed rule for a couple + single sharing a 2-bed. The common options are: split by room (50/50), by space (~60/40 couple/single), or by head (⅔ / ⅓). This map uses the middle ground: <b>rent 60/40</b>, with <b>bills split per head</b> (⅓ each, since they scale with people).</p>
     <p>Where bills aren't included, they're estimated at <b>£<span id="est-bills">370</span>/month</b> for the flat (council tax ~£150, energy ~£130, water ~£45, broadband ~£30, TV licence ~£15). "Bills included" on a listing may not cover council tax — check.</p>
-    <p>"Only fits if split per head" means the single's ⅓ share is ≤ ~£1,000 but their 40% share isn't.</p>
   </details>
   <p class="sub" style="margin:6px 0 0">Sources: <a href="https://www.openrent.co.uk" target="_blank" rel="noopener">OpenRent</a> and <a href="https://www.rightmove.co.uk" target="_blank" rel="noopener">Rightmove</a> (updated: <span id="flats-fetched"></span>). Refreshed daily; listings go fast. Rightmove doesn't flag bills, so it's read from the listing text; most don't mention bills.</p>
 
@@ -433,8 +427,6 @@ const flatLayer = L.layerGroup().addTo(map);
 const LISTINGS = window.LISTINGS || { listings: [], model: {} };
 const TIER_LABEL = {
   in: ['Within budget', 'var(--tier-in)'],
-  rent: ['Rent fits, bills push over', 'var(--tier-rent)'],
-  perhead: ['Only if split per head', 'var(--tier-perhead)'],
 };
 const gbp = n => '£' + Math.round(n).toLocaleString('en-GB');
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -451,7 +443,9 @@ function flatPopup(f) {
   const billsNote = f.billsIncluded ? 'Bills included — check which'
     : f.billsStated ? `Bills not included (est. ${estBills}/mo)`
     : `Bills not mentioned — assume not (est. ${estBills}/mo)`;
-  const avail = f.availableInDays == null ? '' : f.availableInDays <= 0 ? ' · Available now' : ` · Available in ${f.availableInDays} days`;
+  const avail = !f.availableFrom ? ' · Move-in date not given'
+    : f.availableFrom <= new Date().toISOString().slice(0, 10) ? ' · Available now'
+    : ` · Available ${new Date(f.availableFrom).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
   const walkMin = Math.max(1, Math.round(f.stationDistM / WALK_M_PER_MIN));
   return `<div class="flat-popup">
     ${f.image ? `<img src="${esc(f.image)}" alt="" loading="lazy">` : ''}
@@ -473,12 +467,12 @@ function flatPopup(f) {
 
 function renderFlats() {
   flatLayer.clearLayers();
-  const show = { in: el('flats-in').checked, rent: el('flats-rent').checked, perhead: el('flats-perhead').checked };
+  const show = { in: el('flats-in').checked };
   const billsOnly = el('flats-bills-only').checked;
   const reachableOnly = el('flats-reachable').checked;
   const includeCycle = el('flats-cycle').checked;
   const cycleOnly = el('flats-cycle-only').checked;
-  const counts = { in: 0, rent: 0, perhead: 0 };
+  const counts = { in: 0 };
   const srcCounts = { OpenRent: 0, Rightmove: 0 };
   const srcOn = { OpenRent: el('src-openrent').checked, Rightmove: el('src-rightmove').checked };
   let shown = 0;
@@ -602,7 +596,7 @@ document.getElementById('walk-min').addEventListener('input', e => {
   document.getElementById('walk-legend').textContent = `${state.walkMin} min walk from a station`;
   render();
 });
-['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-rent', 'flats-perhead', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove', 'show-cycle', 'flats-cycle', 'flats-cycle-only', 'show-zone-lines', 'show-zone-fill', 'show-gyms', 'gyms-all']
+['show-boroughs', 'show-walk', 'walk-reachable-only', 'show-stations', 'flats-in', 'flats-bills-only', 'flats-reachable', 'src-openrent', 'src-rightmove', 'show-cycle', 'flats-cycle', 'flats-cycle-only', 'show-zone-lines', 'show-zone-fill', 'show-gyms', 'gyms-all']
   .forEach(id => document.getElementById(id).addEventListener('change', render));
 
 render();

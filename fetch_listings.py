@@ -36,6 +36,10 @@ SINGLE_BUDGET = 1000
 BUDGET_SLACK = 50      # "around £1,000"
 SINGLE_RENT_SHARE = 0.40
 EST_BILLS_PCM = 370    # 2-bed, 3 adults: council tax ~150, energy ~130, water ~45, broadband ~30, TV ~15
+KEEP_TIERS = {"in"}    # only flats where the single pays ~£1,050 or less incl. bills
+
+# Move-in: keep flats with no date given, or available before this date.
+MOVE_IN_BEFORE = datetime.date(2026, 11, 14)
 
 
 def get(url):
@@ -127,12 +131,15 @@ def fetch_openrent(stations):
         if not in_range(near):
             continue
         b = budget(cols["prices"][i], cols["bills"][i] == 1)
-        if not b["tier"]:
+        if b["tier"] not in KEEP_TIERS:
+            continue
+        available = datetime.date.today() + datetime.timedelta(days=cols["availableFrom"][i])
+        if available >= MOVE_IN_BEFORE:
             continue
         candidates.append({
             "id": f"or-{pid}", "_pid": pid, "lat": lat, "lon": lon, "price": cols["prices"][i],
             "billsIncluded": cols["bills"][i] == 1, "billsStated": True, "bathrooms": cols["bathrooms"][i],
-            "availableInDays": cols["availableFrom"][i], "minTenancyMonths": cols["minimumTenancy"][i],
+            "availableFrom": max(available, datetime.date.today()).isoformat(), "minTenancyMonths": cols["minimumTenancy"][i],
             **near, **b,
         })
 
@@ -223,15 +230,19 @@ def fetch_rightmove(stations):
             continue
         bills = bills_from_text(text)
         b = budget(price, bills is True)
-        if not b["tier"]:
+        if b["tier"] not in KEEP_TIERS:
             skipped["budget"] += 1
+            continue
+        available = (p.get("letAvailableDate") or "")[:10] or None  # "2026-10-24T00:00:00Z"; None = not given
+        if available and datetime.date.fromisoformat(available) >= MOVE_IN_BEFORE:
+            skipped["move-in"] = skipped.get("move-in", 0) + 1
             continue
         img = (p.get("propertyImages") or {}).get("images") or p.get("images") or []
         listings.append({
             "id": f"rm-{p['id']}", "lat": lat, "lon": lon, "price": price,
             "billsIncluded": bills is True, "billsStated": bills is not None,
             "bathrooms": p.get("bathrooms"),
-            "availableInDays": None, "minTenancyMonths": None,
+            "availableFrom": available, "minTenancyMonths": None,
             **near, **b,
             "title": f"{p.get('propertyTypeFullDescription', '2 bedroom property').capitalize()}, {p.get('displayAddress', '')}",
             "summary": re.sub(r"\s+", " ", p.get("summary") or "").strip(),
@@ -263,7 +274,9 @@ def previous_listings(source):
     if not path.exists():
         return [], None
     prev = json.loads(path.read_text()[len("window.LISTINGS = "):-2])
-    return [l for l in prev["listings"] if l["source"] == source], prev.get("sources", {}).get(source, prev.get("fetched"))
+    kept = [l for l in prev["listings"] if l["source"] == source and l["tier"] in KEEP_TIERS
+            and not (l.get("availableFrom") and datetime.date.fromisoformat(l["availableFrom"]) >= MOVE_IN_BEFORE)]
+    return kept, prev.get("sources", {}).get(source, prev.get("fetched"))
 
 
 def main():

@@ -33,11 +33,9 @@ The fares table and popups use TfL's 2026 adult caps and Travelcards ([PDF](http
 
 The cycle zone assumes 15 km/h on roads ~30% longer than the straight line, so it's a ~3.85 km circle around Liverpool Street (orange dashed ring on the map). Each flat's popup shows its estimated ride time. Tune `CYCLE_*` at the top of `fetch_listings.py`.
 
-Budget model (a couple + a single sharing a 2-bed): rent split **60/40** couple/single — the usual middle ground between per-room (50/50) and per-head (⅔/⅓) — and bills split **per head**. Where bills aren't included they're estimated at £370/month for the flat. Pins are coloured:
+Budget model (a couple + a single sharing a 2-bed): rent split **60/40** couple/single — the usual middle ground between per-room (50/50) and per-head (⅔/⅓) — and bills split **per head**. Where bills aren't included they're estimated at £370/month for the flat. **Only flats where the single pays ≤ ~£1,050 including their bill share are kept** (`KEEP_TIERS`).
 
-- **Green:** single pays ≤ ~£1,050 including their bill share.
-- **Amber:** single's 40% rent share fits, but estimated bills push it over.
-- **Purple (off by default):** only fits if split per head (single pays ⅓).
+**Move-in:** only flats with no move-in date given, or one before `MOVE_IN_BEFORE` (14 Nov 2026), are kept. OpenRent gives a date for every listing; Rightmove's search results include it when the agent has set one.
 
 A blue dot on a pin means the landlord ticked "bills included" — often partial (e.g. council tax/water/broadband but not energy), so check the listing. Constants live at the top of `fetch_listings.py`.
 
